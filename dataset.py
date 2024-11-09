@@ -144,7 +144,7 @@ class ImbalanceCIFAR100(datasets.CIFAR100):
         return cls_num_list
 
 
-class ISIC2018(datasets):
+class ISIC2018(datasets.ImageFolder):
     def __init__(self, root_dir, train=True, transform=None):
         """
         Args:
@@ -155,16 +155,21 @@ class ISIC2018(datasets):
         """
         self.root_dir = root_dir
         self.transform = transform
+        
 
         # 根据 train 参数选择数据
         if train:
-            self.data_frame = pd.read_csv(self.root_dir + '/TrainingGroundTruth.csv')
-            self.root_dir = os.path.join(self.root_dir, '/train_data')
+            self.data_frame = pd.read_csv(self.root_dir + '/TrainingGroundTruth.csv',skiprows=1,header=None)
+            self.root_dir = os.path.join(self.root_dir, 'train_data_256')
+            print('DataFolder:',self.root_dir)
+            
 
         else:
-            self.data_frame = pd.read_csv(self.root_dir + '/TestGroundTruth.csv')
-            self.root_dir = os.path.join(self.root_dir, '/test_data')
+            self.data_frame = pd.read_csv(self.root_dir + '/TestGroundTruth.csv',skiprows=1,header=None)
+            self.root_dir = os.path.join(self.root_dir, 'test_data')
 
+        self.targets = self.data_frame.iloc[:, 1:].idxmax(axis=1).astype(int).tolist()
+        self.targets = [x - 1 for x in self.targets]
 
     def __len__(self):
         return len(self.data_frame)
@@ -176,7 +181,7 @@ class ISIC2018(datasets):
         image = Image.open(img_name)
 
         # 获取对应的疾病标签 (忽略第一列)
-        target = self.data_frame.iloc[idx, 1:].values.astype(float)
+        target = self.targets[idx]
 
         if self.transform:
             image = self.transform(image)

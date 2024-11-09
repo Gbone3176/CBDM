@@ -12,6 +12,7 @@ from tensorboardX import SummaryWriter
 from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision.utils import make_grid, save_image
 from torchvision import transforms
+from torch.cuda.amp import GradScaler, autocast
 
 from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
 from model.model import UNet
@@ -54,7 +55,7 @@ flags.DEFINE_bool('augm', False, help='whether to use ADA augmentation')
 flags.DEFINE_bool('cfg', False, help='whether to train unconditional generation with with 10\%  probability')
 # Dataset
 flags.DEFINE_string('root', './', help='path of dataset')
-flags.DEFINE_string('data_type', 'cifar100', help='data type, must be in [cifar10, cifar100, cifar10lt, cifar100lt]')
+flags.DEFINE_string('data_type', 'cifar100', help='data type, must be in [cifar10, cifar100, cifar10lt, cifar100lt, ISIC2018]')
 flags.DEFINE_float('imb_factor', 0.01, help='imb_factor for long tail dataset')
 flags.DEFINE_float('num_class', 0, help='number of class of the pretrained model')
 # Logging & Sampling
@@ -64,7 +65,7 @@ flags.DEFINE_integer('sample_step', 10000, help='frequency of sampling')
 # Evaluation
 flags.DEFINE_integer('save_step', 100000, help='frequency of saving checkpoints, 0 to disable during training')
 flags.DEFINE_integer('eval_step', 0, help='frequency of evaluating model, 0 to disable during training')
-flags.DEFINE_integer('num_images', 50000, help='the number of generated images for evaluation')
+flags.DEFINE_integer('num_images', 10000, help='the number of generated images for evaluation')
 flags.DEFINE_integer('private_num_images', 0, help='the number of private images for evaluation')
 flags.DEFINE_bool('fid_use_torch', False, help='calculate IS and FID on gpu')
 flags.DEFINE_string('fid_cache', './stats/cifar10.train.npz', help='FID cache')
@@ -83,9 +84,9 @@ flags.DEFINE_string('finetuned_logdir', '', help='logdir for the new model, wher
                      the pretrained model')
 flags.DEFINE_integer('ckpt_step', 0, help='step to reload the pretained checkpoint')
 
-device = torch.device('cuda:0')
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
+device_id = [0, 1] # 双卡训练
 def uniform_sampling(n, N, k):
     return np.stack([np.random.randint(int(N/n)*i, int(N/n)*(i+1), k) for i in range(n)])
 
@@ -126,6 +127,7 @@ def evaluate(sampler, model, sampled):
                 if FLAGS.sample_method!='uncond' and batch_labels is not None:
                     labels.append(batch_labels.cpu())
             images = torch.cat(images, dim=0).numpy()
+            print(images.shape)
         np.save(os.path.join(FLAGS.logdir, '{}_{}_samples_ema_{}.npy'.format(
                                             FLAGS.sample_method, FLAGS.omega,
                                             FLAGS.sample_name)), images)
@@ -135,6 +137,7 @@ def evaluate(sampler, model, sampled):
                                             FLAGS.sample_method, FLAGS.omega,
                                             FLAGS.sample_name)), labels)
         model.train()
+
     else:
         labels = None
         images = np.load(os.path.join(FLAGS.logdir, '{}_{}_samples_ema_{}.npy'.format(
@@ -210,15 +213,32 @@ def train():
                 transform=tran_transform,
                 target_transform=None,
                 download=True)
-
     elif FLAGS.data_type == 'ISIC2018':
         dataset = ISIC2018(
-            root_dir = 'F:\data\ISIC2018',
+            root_dir = '/cpfs01/projects-SSD/cfff-906dc71fafda_SSD/gbw_21307130160/data/ISIC2018',
+            train = True,
+            transform = tran_transform
+        )
+    elif FLAGS.data_type == 'ISIC2019':
+        dataset = ISIC2019(
+            root_dir = '',
+            train = True,
+            transform = tran_transform
+        )
+    elif FLAGS.data_type == 'ChestXray':
+        dataset = ChestXray(
+            root_dir = '',
+            train = True,
+            transform = tran_transform
+        )
+    elif FLAGS.data_type == 'Colorectal':
+        dataset = Colorectal(
+            root_dir = '',s
             train = True,
             transform = tran_transform
         )
     else:
-        print('Please enter a data type included in [cifar10, cifar100, cifar10lt, cifar100lt, ISIC2017, ISIC2018, ISIC2019]')
+        print('Please enter a data type included in [cifar10, cifar100, cifar10lt, cifar100lt, ISIC2018, ISIC2019]')
 
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=FLAGS.batch_size,
@@ -235,20 +255,32 @@ def train():
 
     # model setup
     if 'cifar100' in FLAGS.data_type:
-        FLAGS.num_classes = 100
+        FLAGS.num_class = 100
     elif 'cifar10' in FLAGS.data_type:
-        FLAGS.num_classes = 10
+        FLAGS.num_class = 10
     elif 'ISIC2018' in FLAGS.data_type:
-        FLAGS.num_classes = 7
+        FLAGS.num_class = 7
+    elif 'ISIC2019' in FLAGS.data_type:
+        FLAGS.num_class = 9
+    elif 'ChestXray' in FLAGS.data_type:
+        FLAGS.num_class = 15
+    elif 'Colorectal' in FLAGS.data_type:
+        FLAGS.num_class = 3
 
     net_model = UNet(
         T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
         num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout,
         cond=FLAGS.conditional, augm=FLAGS.augm, num_class=FLAGS.num_class)
-    if FLAGS.ckpt_step != 0:
+    if FLAGS.ckpt_step != 0 and FLAGS.finetune:
         ckpt = torch.load(os.path.join(FLAGS.finetuned_logdir,
                                        'ckpt_{}.pt'.format(FLAGS.ckpt_step)), map_location='cpu')
         net_model.load_state_dict(ckpt['ema_model'])
+    #读取ckpt继续训练基础模型
+    if FLAGS.ckpt_step != 0 and not FLAGS.finetune:
+        ckpt = torch.load(os.path.join(FLAGS.logdir,
+                                       'ckpt_{}.pt'.format(FLAGS.ckpt_step)), map_location='cpu')
+        net_model.load_state_dict(ckpt['ema_model'])
+        print(f"load ckpt{FLAGS.ckpt_step} from {FLAGS.logdir}")
     ema_model = copy.deepcopy(net_model)
 
     # training setup
@@ -262,9 +294,9 @@ def train():
     ema_sampler = GaussianDiffusionSampler(
         ema_model, FLAGS.beta_1, FLAGS.beta_T, FLAGS.T, FLAGS.num_class, FLAGS.img_size, FLAGS.var_type).to(device)
     if FLAGS.parallel:
-        trainer = torch.nn.DataParallel(trainer)
-        net_sampler = torch.nn.DataParallel(net_sampler)
-        ema_sampler = torch.nn.DataParallel(ema_sampler)
+        trainer = torch.nn.DataParallel(trainer,device_ids=device_id)
+        net_sampler = torch.nn.DataParallel(net_sampler,device_ids=device_id)
+        ema_sampler = torch.nn.DataParallel(ema_sampler,device_ids=device_id)
 
     # log setup
     if not os.path.exists(os.path.join(FLAGS.logdir, 'sample')):
@@ -290,31 +322,48 @@ def train():
     print('Model params: %.2f M' % (model_size / 1024 / 1024))
 
     # start training
+
+    scaler = GradScaler() # 开启混合精度训练
+
     with trange(FLAGS.ckpt_step, FLAGS.total_steps, dynamic_ncols=True) as pbar:
         for step in pbar:
             # train
             optim.zero_grad()
+            
             x_0, y_0 = next(datalooper)
-
             # when using ADA, the augmentation parameters will also be returned by the dataloader
             augm = None
-            if type(x_0) == list:
+            if isinstance(x_0, list):
                 x_0, augm = x_0
                 augm = augm.to(device)
-
+                
             x_0 = x_0.to(device)
             y_0 = y_0.to(device)
 
-            loss_ddpm, loss_reg = trainer(x_0, y_0, augm)
-            loss_ddpm = loss_ddpm.mean()
-            loss_reg = loss_reg.mean()
-            loss = loss_ddpm + loss_reg if FLAGS.cb and loss_reg > 0 else loss_ddpm
-            loss.backward()
+            # autocast for mixed precision training
+            with autocast():
 
-            torch.nn.utils.clip_grad_norm_(
-                net_model.parameters(), FLAGS.grad_clip)
-            optim.step()
+                # compute losses
+                loss_ddpm, loss_reg = trainer(x_0, y_0, augm)
+                loss_ddpm = loss_ddpm.mean()
+                loss_reg = loss_reg.mean()
+                loss = loss_ddpm + loss_reg if FLAGS.cb and loss_reg > 0 else loss_ddpm
+            
+
+            # backward pass with gradient scaling
+            scaler.scale(loss).backward()
+
+            # gradient clipping
+            torch.nn.utils.clip_grad_norm_(net_model.parameters(), FLAGS.grad_clip)
+            
+            # optimizer step with scaled gradients
+            scaler.step(optim)
+            scaler.update()  # update the scale for next iteration
+
+            # scheduler step
             sched.step()
+
+            # update EMA model
             ema(net_model, ema_model, FLAGS.ema_decay)
 
             # logs
@@ -370,14 +419,14 @@ def train():
 
 
 def eval():
-
     if 'cifar100' in FLAGS.data_type:
-        FLAGS.num_classes = 100
+        FLAGS.num_class = 100
     elif 'cifar10' in FLAGS.data_type:
-        FLAGS.num_classes = 10
+        FLAGS.num_class = 10
     elif 'ISIC2018' in FLAGS.data_type:
-        FLAGS.num_classes = 7
-
+        FLAGS.num_class = 7    
+        
+    print("data_type:" , FLAGS.data_type)
     model = UNet(
         T=FLAGS.T, ch=FLAGS.ch, ch_mult=FLAGS.ch_mult, attn=FLAGS.attn,
         num_res_blocks=FLAGS.num_res_blocks, dropout=FLAGS.dropout,
@@ -398,7 +447,7 @@ def eval():
     elif 'cifar10' in FLAGS.data_type:
         FLAGS.fid_cache = './stats/cifar10.train.npz'
     elif 'ISIC2018' in FLAGS.data_type:
-        FLAGS.fid_cache = './stats/ISIC2018.train.npz'
+        FLAGS.fid_cache = './stats/ISIC2018-256.train.npz'
 
     if not FLAGS.sampled:
         model.load_state_dict(ckpt['ema_model'])
@@ -408,15 +457,15 @@ def eval():
     (IS, IS_std), FID, prd_score, ipr = evaluate(sampler, model, FLAGS.sampled)
 
     print('logdir', FLAGS.logdir)
-    print("Model(EMA): IS:%6.5f(%.5f), FID/CIFAR100:%7.5f \n" % (IS, IS_std, FID))
+    print("Model(EMA): IS:%6.5f(%.5f), FID/%s:%7.5f \n" % (IS, IS_std,FLAGS.data_type, FID))
     print("Improved PRD:%6.5f, RECALL:%7.5f \n" % (ipr[0], ipr[1]))
-    print("PRD PRECISION FOR 100 CLASSES:%6.5f, RECALL:%7.5f \n" % (prd_score[0], prd_score[1]))
+    print("PRD PRECISION FOR %d CLASSES:%6.5f, RECALL:%7.5f \n" % (FLAGS.num_class, prd_score[0], prd_score[1]))
 
     with open(os.path.join(FLAGS.logdir,  'res_ema_{}.txt'.format(FLAGS.sample_name)), 'a+') as f:
         f.write("Settings: NUM:{} EPOCH:{}, OMEGA:{}, METHOD:{} \n" .format (FLAGS.num_images, FLAGS.ckpt_step, FLAGS.omega,FLAGS.sample_method))
         f.write("Model(EMA): IS:%6.5f(%.5f), FID/CIFAR100:%7.5f \n" % (IS, IS_std, FID))
         f.write("Improved PRD:%6.5f, RECALL:%7.5f \n" % (ipr[0], ipr[1]))
-        f.write("PRD PRECISION FOR 100 CLASSES:%6.5f, RECALL:%7.5f \n" % (prd_score[0], prd_score[1]))
+        f.write("PRD PRECISION FOR %d CLASSES:%6.5f, RECALL:%7.5f \n" % (FLAGS.num_class, prd_score[0], prd_score[1]))
     f.close()
 
 
