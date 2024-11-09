@@ -12,12 +12,11 @@ from tensorboardX import SummaryWriter
 from torchvision.datasets import CIFAR10, CIFAR100
 from torchvision.utils import make_grid, save_image
 from torchvision import transforms
-from torch.cuda.amp import GradScaler, autocast
 
 from diffusion import GaussianDiffusionTrainer, GaussianDiffusionSampler
 from model.model import UNet
 from utils.augmentation import *
-from dataset import ImbalanceCIFAR100, ImbalanceCIFAR10, ISIC2018
+from dataset import ImbalanceCIFAR100, ImbalanceCIFAR10, ISIC2018, ISIC2019, ChestXray, Colorectal
 from score.both import get_inception_and_fid_score
 from utils.augmentation import KarrasAugmentationPipeline
 
@@ -215,30 +214,31 @@ def train():
                 download=True)
     elif FLAGS.data_type == 'ISIC2018':
         dataset = ISIC2018(
-            root_dir = '/cpfs01/projects-SSD/cfff-906dc71fafda_SSD/gbw_21307130160/data/ISIC2018',
+            root_dir = '/storage/ScientificPrograms/Conditional_Diffusion/ISIC_data/ISIC2018',
             train = True,
             transform = tran_transform
         )
     elif FLAGS.data_type == 'ISIC2019':
         dataset = ISIC2019(
-            root_dir = '',
+            root_dir = '/storage/ScientificPrograms/Conditional_Diffusion/ISIC_data/ISIC2019',
             train = True,
             transform = tran_transform
         )
     elif FLAGS.data_type == 'ChestXray':
         dataset = ChestXray(
-            root_dir = '',
+            root_dir = '/storage/ScientificPrograms/Diffusion/data/ChestXray14',
             train = True,
             transform = tran_transform
         )
     elif FLAGS.data_type == 'Colorectal':
         dataset = Colorectal(
-            root_dir = '',s
+            root_dir = '/storage/ScientificPrograms/Diffusion/data/Colorectal',
             train = True,
             transform = tran_transform
         )
+
     else:
-        print('Please enter a data type included in [cifar10, cifar100, cifar10lt, cifar100lt, ISIC2018, ISIC2019]')
+        print('Please enter a data type included in [cifar10, cifar100, cifar10lt, cifar100lt, ISIC2017, ISIC2018, ISIC2019]')
 
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=FLAGS.batch_size,
@@ -323,7 +323,7 @@ def train():
 
     # start training
 
-    scaler = GradScaler() # 开启混合精度训练
+    scaler = torch.cuda.amp.GradScaler() # 开启混合精度训练
 
     with trange(FLAGS.ckpt_step, FLAGS.total_steps, dynamic_ncols=True) as pbar:
         for step in pbar:
@@ -341,7 +341,7 @@ def train():
             y_0 = y_0.to(device)
 
             # autocast for mixed precision training
-            with autocast():
+            with torch.autocast(device_type="cuda"):
 
                 # compute losses
                 loss_ddpm, loss_reg = trainer(x_0, y_0, augm)

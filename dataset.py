@@ -175,12 +175,111 @@ class ISIC2018(datasets.ImageFolder):
         return len(self.data_frame)
 
     def __getitem__(self, idx):
-        # 获取图片文件名
         img_name = os.path.join(self.root_dir, self.data_frame.iloc[idx, 0] + '.jpg')
-        # 读取图片
         image = Image.open(img_name)
 
-        # 获取对应的疾病标签 (忽略第一列)
+        target = self.targets[idx]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, target
+
+class ISIC2019(datasets.ImageFolder):
+    def __init__(self, root_dir, train=True, transform=None):
+        """
+        Args:
+            csv_file (string): Path to the CSV file with image names and labels.
+            root_dir (string): Directory with all the images.
+            train (bool): If True, load training data; if False, load evaluation data.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.root_dir = root_dir
+        self.transform = transform
+        
+
+        if train:
+            self.data_frame = pd.read_csv(self.root_dir + 'ISIC_2019_Training_GroundTruth.csv',skiprows=1,header=None)
+            self.root_dir = os.path.join(self.root_dir, 'train_data')
+            print('DataFolder:',self.root_dir)
+
+        self.targets = self.data_frame.iloc[:, 1:].idxmax(axis=1).astype(int).tolist()
+        self.targets = [x - 1 for x in self.targets]
+
+    def __len__(self):
+        return len(self.data_frame)
+
+    def __getitem__(self, idx):
+        img_name = os.path.join(self.root_dir, self.data_frame.iloc[idx, 0] + '.jpg')
+        image = Image.open(img_name)
+        target = self.targets[idx]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, target
+    
+class ChestXray(datasets.ImageFolder):
+    def __init__(self, root_dir, train=True, transform=None):
+        """
+        Args:
+            csv_file (string): Path to the CSV file with image names and labels.
+            root_dir (string): Directory with all the images.
+            train (bool): If True, load training data; if False, load evaluation data.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.root_dir = root_dir
+        self.transform = transform
+        
+
+        if train:
+            self.data_frame = pd.read_csv(self.root_dir + 'full_train.csv',skiprows=1,header=None)
+            self.root_dir = os.path.join(self.root_dir, 'images')
+            print('DataFolder:',self.root_dir)
+
+        self.targets = self.data_frame.iloc[:, 1:].idxmax(axis=1).astype(int).tolist()
+        self.targets = [x - 1 for x in self.targets]
+
+    def __len__(self):
+        return len(self.data_frame)
+
+    def __getitem__(self, idx):
+        img_name = os.path.join(self.root_dir, self.data_frame.iloc[idx, 0])
+        image = Image.open(img_name)
+        target = self.targets[idx]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, target
+
+class Colorectal(datasets.ImageFolder):
+    def __init__(self, root_dir, train=True, transform=None):
+        """
+        Args:
+            csv_file (string): Path to the CSV file with image names and labels.
+            root_dir (string): Directory with all the images.
+            train (bool): If True, load training data; if False, load evaluation data.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.root_dir = root_dir
+        self.transform = transform
+        
+
+        if train:
+            self.data_frame = pd.read_csv(self.root_dir + 'train.csv',skiprows=1,header=None)
+            self.root_dir = os.path.join(self.root_dir, 'train')
+            print('DataFolder:',self.root_dir)
+
+        self.targets = self.data_frame.iloc[:, 1:].idxmax(axis=1).astype(int).tolist()
+        self.targets = [x - 1 for x in self.targets]
+
+    def __len__(self):
+        return len(self.data_frame)
+
+    def __getitem__(self, idx):
+        img_name = os.path.join(self.root_dir, self.data_frame.iloc[idx, 0])
+        image = Image.open(img_name)
         target = self.targets[idx]
 
         if self.transform:
